@@ -195,6 +195,9 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
 
         void ExportGucCleanup()
         {
+            if (temp_gucs_.empty())
+                return;
+
             InitGucCleanup(temp_gucs_.size());
             for (const auto &temp_guc : temp_gucs_)
                 StoreGucCleanup(temp_guc);

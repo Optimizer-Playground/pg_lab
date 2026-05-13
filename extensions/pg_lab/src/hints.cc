@@ -830,7 +830,7 @@ void StoreGucCleanup(TempGUC *temp_guc)
 
 void FreeGucCleanup()
 {
-    if (!guc_cleanup_actions)
+    if (!n_cleanup_actions)
         return;
 
     for (int i = 0; i < n_cleanup_actions; i++)
