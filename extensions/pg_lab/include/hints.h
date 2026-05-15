@@ -29,6 +29,8 @@ extern "C" {
 #define IsAIntermediatePath(pathptr) (PathIsA(pathptr, Memoize) || PathIsA(pathptr, Material))
 #define IsAParPath(pathptr) (PathIsA(pathptr, Gather) || PathIsA(pathptr, GatherMerge))
 
+const char* path_to_string(Path *path);
+
 typedef struct TempGUC
 {
     char *guc_name;
@@ -175,6 +177,12 @@ typedef struct CostHint
     } costs;
 } CostHint;
 
+typedef struct ParallelizationHint
+{
+    Relids relids;
+    int n_workers;
+} ParallelizationHint;
+
 typedef struct PlannerHints
 {
     char *raw_query;
@@ -197,10 +205,13 @@ typedef struct PlannerHints
 
     struct HTAB *cost_hints;
 
-    Relids parallel_rels;
+    /* The intermediates that should be computed in parallel */
+    List *parallel_hints;
 
+    /* For entirely parallel queries, the number of workers to use for the entire plan. */
     int parallel_workers;
 
+    /* Whether the entire plan should be parallelized (in constrast to just the final join) */
     bool parallelize_entire_plan;
 
     List *temp_gucs;

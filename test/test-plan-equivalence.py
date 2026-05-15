@@ -1,19 +1,16 @@
-
+import argparse
+import sys
 import textwrap
 import unittest
 from pathlib import Path
-from typing import Optional
-import sys
 
-import argparse
 import core
-
-
 import psycopg
 
 CONNECT_STRING = "dbname=imdb user=postgres host=localhost"
 WORKLOAD_DIR = ""
 QUERY_GLOB = "*.sql"
+
 
 def _load_workload() -> dict[str, str]:
     workload_dir = Path(WORKLOAD_DIR)
@@ -22,10 +19,7 @@ def _load_workload() -> dict[str, str]:
 
 
 class TestFullPlanHinting(core.PostgresTestCase):
-
-    def __init__(
-        self, methodName: str = "runTest"
-    ) -> None:
+    def __init__(self, methodName: str = "runTest") -> None:
         super().__init__(methodName)
 
     def setUp(self) -> None:
@@ -40,7 +34,6 @@ class TestFullPlanHinting(core.PostgresTestCase):
             with self.subTest(label=label):
                 self._check_query(query, label=label)
             self.conn.rollback()
-
 
     def _check_query(self, query: str, *, label: str) -> None:
         with self.conn.cursor() as cur:
@@ -77,7 +70,7 @@ def eval_query(label: str) -> None:
 
         hinted_plan = core.explain_plan(hinted_query, cur)
         print(f"Hinted plan for query {label}:\n{hinted_plan}\n")
-    
+
 
 if __name__ == "__main__":
     description = textwrap.dedent("""

@@ -73,12 +73,6 @@ static add_path_precheck_hook_type prev_add_path_precheck_hook = NULL;
 extern add_partial_path_precheck_hook_type add_partial_path_precheck_hook;
 static add_partial_path_precheck_hook_type prev_add_partial_path_precheck_hook = NULL;
 
-extern set_rel_pathlist_hook_type set_rel_pathlist_hook;
-static set_rel_pathlist_hook_type prev_rel_pathlist_hook = NULL;
-
-extern set_join_pathlist_hook_type set_join_pathlist_hook;
-static set_join_pathlist_hook_type prev_join_pathlist_hook = NULL;
-
 extern set_baserel_size_estimates_hook_type set_baserel_size_estimates_hook;
 static set_baserel_size_estimates_hook_type prev_baserel_size_estimates_hook = NULL;
 
@@ -150,7 +144,8 @@ extern int n_cleanup_actions;
 typedef struct PGLabPathInfo
 {
     bool valid;
-    Cost original_cost;
+    Cost original_startup_cost;
+    Cost original_total_cost;
 } PGLabPathInfo;
 
 static bool enable_pglab = true;
@@ -182,7 +177,7 @@ PlannerHints *current_hints = NULL;
         elog(INFO, __VA_ARGS__); \
     }
 
-static char *
+static const char *
 relopt_to_string(RelOptInfo *rel)
 {
     int i = -1;
@@ -202,7 +197,7 @@ relopt_to_string(RelOptInfo *rel)
     return buf->data;
 }
 
-static char *
+static const char *
 pathtype_to_string(Path *path)
 {
     if (PathIsA(path, SeqScan))
@@ -284,7 +279,7 @@ pathtype_to_string(Path *path)
         return "<Unknown>";
 }
 
-static char *
+const char *
 path_to_string(Path *path)
 {
     StringInfo buf = makeStringInfo();
@@ -325,7 +320,7 @@ path_to_string(Path *path)
             foreach(lc, apath->subpaths)
             {
                 Path *subpath = (Path *) lfirst(lc);
-                char *substring;
+                const char *substring;
                 substring = path_to_string(subpath);
                 if (first)
                 {
@@ -351,7 +346,7 @@ path_to_string(Path *path)
             foreach(lc, mapath->subpaths)
             {
                 Path *subpath = (Path *) lfirst(lc);
-                char *substring;
+                const char *substring;
                 substring = path_to_string(subpath);
                 if (first)
                 {
@@ -936,7 +931,6 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
     bool             hint_found;
     bool             memo_required, material_required;
     bool             memo_allowed, material_allowed;
-    bool             memo_used, material_used;
 
     if (IS_UPPER_REL(path->parent) || !hints->operator_hints)
     {
@@ -1213,7 +1207,7 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
  *
  * Notice that this function does not work on partial paths, they must already be gathered.
  */
-static Path*
+static List *
 find_parallel_subpath(Path *path)
 {
     switch (path->pathtype)
@@ -1232,11 +1226,12 @@ find_parallel_subpath(Path *path)
         case T_FunctionScan:
         case T_ValuesScan:
         case T_CteScan:
-            return NULL;
+            return NIL;
         case T_Append:
         {
             AppendPath *apath;
-            ListCell   *lc;
+            List     *parallel_paths;
+            ListCell *lc;
             apath = (AppendPath *) path;
             if (apath->first_partial_path < list_length(apath->subpaths))
             {
@@ -1244,42 +1239,41 @@ find_parallel_subpath(Path *path)
                         errmsg("In find_parallel_subpath: AppendPath with partial paths found"),
                         errhint("This is a programming error. Please report at https://github.com/Optimizer-Playground/pg_lab/issues."));
             }
+
+            parallel_paths = NIL;
             foreach(lc, apath->subpaths)
             {
                 Path *subpath = (Path *) lfirst(lc);
-                Path *par_subpath = find_parallel_subpath(subpath);
-                if (par_subpath)
-                    return par_subpath;
+                List *par_subpath = find_parallel_subpath(subpath);
+                parallel_paths = list_concat(parallel_paths, par_subpath);
             }
-            return NULL;
+            return parallel_paths;
         }
         case T_MergeAppend:
         {
             MergeAppendPath *mpath;
-            ListCell        *lc;
+            List     *parallel_paths;
+            ListCell *lc;
             mpath = (MergeAppendPath *) path;
-            /* merge-append doesn't support parallel subpaths, yet */
+            parallel_paths = NIL;
             foreach(lc, mpath->subpaths)
             {
                 Path *subpath = (Path *) lfirst(lc);
-                Path *par_subpath = find_parallel_subpath(subpath);
-                if (par_subpath)
-                    return par_subpath;
+                List *par_subpath = find_parallel_subpath(subpath);
+                parallel_paths = list_concat(parallel_paths, par_subpath);
             }
-            return NULL;
+            return parallel_paths;
         }
         case T_NestLoop:
         case T_HashJoin:
         case T_MergeJoin:
         {
             JoinPath *jpath;
-            Path     *outer, *inner;
+            List *outer_par, *inner_par;
             jpath = (JoinPath *) path;
-            outer = find_parallel_subpath(jpath->outerjoinpath);
-            if (outer)
-                return outer;
-            inner = find_parallel_subpath(jpath->innerjoinpath);
-            return inner;
+            outer_par = find_parallel_subpath(jpath->outerjoinpath);
+            inner_par = find_parallel_subpath(jpath->innerjoinpath);
+            return list_concat(outer_par, inner_par);
         }
         case T_Material:
         {
@@ -1347,12 +1341,10 @@ find_parallel_subpath(Path *path)
             spath = (SetOpPath *) path;
             #if PG_VERSION_NUM >= 180000
             {
-                Path *left_par, *right_par;
+                List *left_par, *right_par;
                 left_par = find_parallel_subpath(spath->leftpath);
-                if (left_par)
-                    return left_par;
                 right_par = find_parallel_subpath(spath->rightpath);
-                return right_par;
+                return list_concat(left_par, right_par);
             }
             #else
             return find_parallel_subpath(spath->subpath);
@@ -1390,13 +1382,13 @@ find_parallel_subpath(Path *path)
         {
             GatherPath *gpath;
             gpath = (GatherPath *) path;
-            return gpath->subpath;
+            return list_make1(gpath->subpath);
         }
         case T_GatherMerge:
         {
             GatherMergePath *gmpath;
             gmpath = (GatherMergePath *) path;
-            return gmpath->subpath;
+            return list_make1(gmpath->subpath);
         }
         default:
             ereport(ERROR,
@@ -1417,9 +1409,9 @@ find_parallel_subpath(Path *path)
 static bool
 path_satisfies_parallelization(PlannerHints *hints, Path *path)
 {
-    Path            *par_subpath;
-    JoinOrder       *parallel_root;
-    BMS_Comparison   bms_comp;
+    List *par_subpaths;
+    ListCell *lc_hints;
+    int n_expected_par;
 
     if (hints->parallel_mode == PARMODE_DEFAULT)
     {
@@ -1427,126 +1419,162 @@ path_satisfies_parallelization(PlannerHints *hints, Path *path)
         return true;
     }
 
-    par_subpath = find_parallel_subpath(path);
+    par_subpaths = find_parallel_subpath(path);
     if (hints->parallel_mode == PARMODE_SEQUENTIAL)
     {
         /* We should only produce sequential paths. This is easy to enforce.*/
-        return par_subpath == NULL;
+        return par_subpaths == NIL;
     }
 
-    /*
-     * At this point we know that we should indeed produce a parallel path.
-     * This leaves us with two cases:
-     *
-     * 1. Either the path contains a parallel portion (par_subpath != NULL). In this case, we need to make sure that the
-     *    correct part of the path is parallelized.
-     * 2. Or, the path is fully sequential (par_subpath == NULL). Even in this case, we still cannot immediately reject the
-     *    path. The reason is that the planner might still use this path as the inner relation of a parallel join. Therefore,
-     *    we need to check whether this path can actually become such an inner relation.
-     */
     Assert(hints->parallel_mode == PARMODE_PARALLEL);
 
-    if (par_subpath)
-    {
-        /* Case 1: make sure that we did parallelize the correct subpath */
-
-        if (hints->parallelize_entire_plan)
-        {
-            return IS_UPPER_REL(par_subpath->parent);
-        }
-        else
-        {
-            Assert(hints->parallel_rels != NULL);
-            return !IS_UPPER_REL(par_subpath->parent)  /* this proofs that parent->relids != NULL */
-                && bms_equal(par_subpath->parent->relids, hints->parallel_rels);
-        }
-    }
-
     /*
-     * We are in case 2: either our path could still be usefull as an inner relation of a parallel join,
-     * or we have to reject it (since parallel_mode == PARALLEL)
+     * At this point we know that we should produce parallel paths. Due to the way Postgres generates those parallel
+     * paths, our check is more difficult than just checking whether our path is parallel and parallelizes the correct thing.
+     * What makes this more difficult is the fact that Postgres uses sequential paths as the inner relations of parallel
+     * joins. Therefore, we have to distinguish two cases:
+     *
+     * 1. If our path is sequential, we must check whether it can still become the inner child of such a parallel join
+     *    (and whether the parallel join is actually compatible with our hints)
+     * 2. If our path is parallel, we must check whether its parallel subpaths are compatible with our hints.
      */
-    if (hints->parallelize_entire_plan || hints->parallel_rels == NULL)
+
+    if (par_subpaths == NIL)
     {
         /*
-         * For parallelize_entire_plan, we need to parallelize all joins, so make sure that this is not the last join.
-         *
-         * The same reasoning applies if parallel_rels == NULL: this indicates that we can parallelize any portion of the plan.
-         * Therefore, we just need to make sure that there is still a chance that we can parallelize later on
-         * (i.e. in a subsequent join, which in turn implies that this is not allowed to be the final join).
-         *
-         * NB: we cannot use bms_is_subset here because this check would pass for parent->relids == all_baserels
-         *     as well.
+         * We are in case 1:
+         * Our path is entirely sequential, but we should produce parallel paths.
+         * We must reject the path, unless it can still function as the inner child of a parallel join.
          */
-        return !IS_UPPER_REL(path->parent)
-            && !bms_equal(path->parent->relids, current_planner_root->all_baserels);
-    }
+        ListCell *lc;
 
-    /*
-     * This is the final case: we should compute a specific intermediate in parallel. So make sure that our current path can
-     * become an inner relation of the parallel join of the intermediate.
-     */
-    Assert(hints->parallel_rels != NULL);
-    if (IS_UPPER_REL(path->parent))
-    {
-        /* We are already at an upper rel. There is no way to introduce parallelization at this point. Reject. */
-        return false;
-    }
-
-    /* From this point onwards we can directly access parent->relids since we just proofed that we are not in an upper rel. */
-    bms_comp = bms_subset_compare(path->parent->relids, hints->parallel_rels);
-    if (bms_comp == BMS_EQUAL || bms_comp == BMS_SUBSET2)
-    {
-        /* Our path is too far up in the plan. We should have already parallelized. Reject. */
-        return false;
-    }
-    else if (bms_comp == BMS_DIFFERENT)
-    {
-        /* This path does not belong to the parallel join at all. We can keep it. */
-        return true;
-    }
-
-    /*
-     * Now we did also proof that our path computes a relation that will become part of the parallel join.
-     * But can it become the inner relation? We can only really answer this question if we know the final join order.
-     * Otherwise, later add_path() calls need to evict the bad paths again.
-     */
-    if (!hints->join_order_hint)
-        return true;
-
-    parallel_root = traverse_join_order(hints->join_order_hint, hints->parallel_rels);
-    while (parallel_root)
-    {
-        if (parallel_root->node_type == BASE_REL)
-        {
-            /* We reached a base rel without finding the inner child. Reject. */
-            return false;
-        }
-        else if (bms_is_subset(path->parent->relids, parallel_root->inner_child->relids))
-        {
-            /* Bingo! Our path is on its way to become an inner child! */
-            return true;
-        }
-        else if (bms_is_subset(path->parent->relids, parallel_root->outer_child->relids))
-        {
-            /* The path could still become an inner relation further down in the plan. Keep checking. */
-            parallel_root = parallel_root->outer_child;
-        }
-        else
+        if (IS_UPPER_REL(path->parent))
         {
             /*
-             * Some of the relations from our path belong to the outer child while others belong to the inner one.
-             * This will be rejected by the join order check anyhow, but we can also reject the path here since it cannot
-             * be part of an inner relation anymore.
+             * We are already at an upper rel. We can never become part of a parallel join since these
+             * have already been processed at this point. Reject.
              */
             return false;
         }
+
+        if (hints->parallelize_entire_plan)
+        {
+            /*
+             * We know we are not in an upper rel. If there is still a join left to perform, we might use our current path
+             * as the inner child.
+             */
+            return !bms_equal(path->parent->relids, current_planner_root->all_baserels);
+        }
+
+        /*
+         * From this point onward, we can safely access relids directly because we just proofed that we
+         * are not in an upper rel.
+         *
+         * No we need to check whether our path is a subpath of any of the parallel hints.
+         */
+
+        foreach (lc, hints->parallel_hints)
+        {
+            ParallelizationHint *par_hint;
+            BMS_Comparison bms_comp;
+
+            par_hint = (ParallelizationHint *) lfirst(lc);
+            bms_comp = bms_subset_compare(path->parent->relids, par_hint->relids);
+            if (bms_comp == BMS_EQUAL)
+            {
+                /*
+                 * we are computing the entire subplan sequentially that should be computed in parallel. Reject.
+                 *
+                 * This is safe because Postgres does not support nesting parallel subpaths. If we already did parallelize
+                 * here, we can never parallelize a enclosing subplan later on.
+                 */
+                return false;
+            }
+            else if (bms_comp == BMS_SUBSET1)
+            {
+                /*
+                 * We can become an inner relation of the parallel subplan. Accept.
+                 */
+                return true;
+            }
+            else if (bms_comp == BMS_SUBSET2)
+            {
+                /*
+                 * The subplan that should be parallelized is a subplan of the current path.
+                 * we are already too high up in the DP to become part of the parallel subplan. Reject.
+                 */
+                return false;
+            }
+            else
+            {
+                /*
+                 * The parallel subplan is disjoint from the current path. Let it pass, we are not interested in it.
+                 */
+                Assert(bms_comp == BMS_DIFFERENT);
+                continue;
+            }
+
+        }
+
+        /*
+         * None of the parallel hints were relevant for our current path. We are computing a different portion of the query
+         * plan than the one that should be parallelized. Let it pass.
+         */
+        return true;
     }
 
-    ereport(ERROR,
-            errmsg("In path_satisfies_parallelization: join order traversal failed unexpectedly."),
-            errhint("This is a programming error. Please report at https://github.com/Optimizer-Playground/pg_lab/issues."));
-    return false;
+    /*
+     * We are in case 2:
+     * Our path contains (one or multiple) parallel subpaths. We must make sure that each of them is compatible with
+     * one of the parallel hints.
+     */
+
+    n_expected_par = hints->parallelize_entire_plan ? 1 : list_length(hints->parallel_hints);
+    if (hints->mode == HINTMODE_FULL && list_length(par_subpaths) > n_expected_par)
+    {
+        /*
+         * Easy early exit:
+         * We have more parallel subpaths than hints. In full mode, this is not allowed, because we cannot
+         * parallelize a subpath without a hint.
+         * Reject.
+         */
+        return false;
+    }
+
+    foreach (lc_hints, hints->parallel_hints)
+    {
+        ParallelizationHint *par_hint;
+        ListCell *lc_subpaths;
+        bool hint_satisfied;
+
+        par_hint = (ParallelizationHint *) lfirst(lc_hints);
+        hint_satisfied = false;
+
+        foreach (lc_subpaths, par_subpaths)
+        {
+            Path *par_subpath;
+            par_subpath = (Path *) lfirst(lc_subpaths);
+            if (bms_equal(par_subpath->parent->relids, par_hint->relids))
+            {
+                /* found a matching hint for this parallel subpath. We can stop searching for this subpath. */
+                hint_satisfied = true;
+                break;
+            }
+        }
+
+        if (!hint_satisfied)
+            return false;
+    }
+
+    /*
+     * At this point we know that
+     * a) all our parallel hints are satisfied (thanks to the nested for-loop above), and
+     * b) there are no additional parallel subpaths without a hint (thanks to the early exit above).
+     * Therefore, we parallelize exactly the correct subpaths according to our hints.
+     * Accept the path.
+     */
+
+    return true;
 }
 
 /*
@@ -1555,6 +1583,8 @@ path_satisfies_parallelization(PlannerHints *hints, Path *path)
 static bool
 partial_path_satisfies_parallelization(PlannerHints *hints, Path *path)
 {
+    ListCell            *lc;
+
     if (hints->parallel_mode == PARMODE_DEFAULT)
     {
         /* no restrictions on parallelization */
@@ -1577,8 +1607,25 @@ partial_path_satisfies_parallelization(PlannerHints *hints, Path *path)
         return true;
     }
 
-    return !IS_UPPER_REL(path->parent)
-        &&  bms_is_subset(path->parent->relids, hints->parallel_rels);
+    if IS_UPPER_REL(path->parent)
+    {
+        /* We are already at an upper rel, but should not parallelize the entire plan. Reject. */
+        return false;
+    }
+
+    foreach (lc, hints->parallel_hints)
+    {
+        ParallelizationHint *par_hint;
+        par_hint = (ParallelizationHint *) lfirst(lc);
+        if (bms_is_subset(path->parent->relids, par_hint->relids)) /* parent->relids is safe b/c we are not at an upper rel */
+        {
+            /* found a matching parallel hint for our current intermediate */
+            return true;
+        }
+    }
+
+    /* None of the parallel hints contains our current intermediate. Reject. */
+    return false;
 }
 
 /*
@@ -1949,8 +1996,6 @@ hint_aware_planner(Query* parse, const char* query_string, int cursorOptions, Pa
 void
 hint_aware_ExecutorEnd(QueryDesc *queryDesc)
 {
-    ListCell *lc;
-
     if (IsParallelWorker())
     {
         if (prev_executor_end_hook)
@@ -2018,7 +2063,7 @@ hint_aware_final_path_callback(PlannerInfo *root, RelOptInfo *rel, Path *best_pa
             ereport(ERROR,
                     errmsg("pg_lab could not find a valid path that satisfies all hints."),
                     errdetail("Final path was %s", path_to_string(best_path)),
-                    errhint("If you are certain that the hinted query should be valid, please open an issue at https://github.com/Optimizer-Playground/pg_lab/issues."));
+                    errhint("If you are sure that the hinted query should be valid, please open an issue at https://github.com/Optimizer-Playground/pg_lab/issues."));
     }
 
     if (prev_final_path_callback)
@@ -2107,16 +2152,6 @@ hint_aware_add_partial_path_precheck(RelOptInfo *parent_rel,
             standard_add_partial_path(rel, path); \
     }
 
-static void
-evict_path(Path *path, bool is_partial)
-{
-    if (PathIsA(path, IndexScan) || PathIsA(path, IndexOnlyScan))
-    {
-        return;
-    }
-
-    pfree(path);
-}
 
 static PGLabPathInfo*
 make_path_info(PlannerHints *hints, Path *path, bool is_partial)
@@ -2134,7 +2169,7 @@ make_path_info(PlannerHints *hints, Path *path, bool is_partial)
 
     path_info = (PGLabPathInfo *) palloc0(sizeof(PGLabPathInfo));
     path_info->valid = valid;
-    path_info->original_cost = path->total_cost;
+    path_info->original_startup_cost = path->total_cost;
     path->pglab_private = path_info;
 
     return path_info;
@@ -2149,7 +2184,7 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
     PGLabPathInfo *path_info;
     List *invalid_paths;
     ListCell *lc;
-    Cost max_valid_cost;
+    Cost max_valid_startup_cost, max_valid_total_cost;
 
     CHECK_FOR_INTERRUPTS();
     if (!current_hints || !current_hints->contains_hint)
@@ -2207,18 +2242,21 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
 
     path_info = (PGLabPathInfo *) palloc0(sizeof(PGLabPathInfo));
     path_info->valid = satisfies_hints;
-    path_info->original_cost = path->total_cost;
+    path_info->original_startup_cost = path->startup_cost;
+    path_info->original_total_cost   = path->total_cost;
     path->pglab_private = path_info;
 
     if (satisfies_hints)
     {
         invalid_paths = NIL;
-        max_valid_cost = path->total_cost;
+        max_valid_startup_cost = path->startup_cost;
+        max_valid_total_cost = path->total_cost;
     }
     else
     {
         invalid_paths = list_make1(path);
-        max_valid_cost = 0;
+        max_valid_startup_cost = 0;
+        max_valid_total_cost = 0;
     }
 
     foreach (lc, parent_rel->pathlist)
@@ -2239,9 +2277,14 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
         Assert(candidate_info != NULL);
 
         if (candidate_info->valid)
-            max_valid_cost = Max(candidate->total_cost, max_valid_cost);
+        {
+            max_valid_startup_cost = Max(candidate->startup_cost, max_valid_startup_cost);
+            max_valid_total_cost   = Max(candidate->total_cost, max_valid_total_cost);
+        }
         else
+        {
             invalid_paths = lappend(invalid_paths, candidate);
+        }
     }
 
     foreach (lc, invalid_paths)
@@ -2251,7 +2294,8 @@ hint_aware_add_path(RelOptInfo *parent_rel, Path *path)
 
         invalid = (Path *) lfirst(lc);
         invalid_info = (PGLabPathInfo *) invalid->pglab_private;
-        invalid->total_cost = invalid_info->original_cost + 1.01 * max_valid_cost;
+        invalid->startup_cost = invalid_info->original_startup_cost + 1.01 * max_valid_startup_cost;
+        invalid->total_cost   = invalid_info->original_total_cost + 1.01 * max_valid_total_cost;
     }
 
     PG_ADD_PATH(parent_rel, path);
@@ -2265,7 +2309,7 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
     PGLabPathInfo *path_info;
     List *invalid_paths;
     ListCell *lc;
-    Cost max_valid_cost;
+    Cost max_valid_startup_cost, max_valid_total_cost;
 
     CHECK_FOR_INTERRUPTS();
     if (!current_hints || !current_hints->contains_hint)
@@ -2312,18 +2356,21 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
 
     path_info = (PGLabPathInfo *) palloc0(sizeof(PGLabPathInfo));
     path_info->valid = satisfies_hints;
-    path_info->original_cost = path->total_cost;
+    path_info->original_startup_cost = path->startup_cost;
+    path_info->original_total_cost   = path->total_cost;
     path->pglab_private = path_info;
 
     if (satisfies_hints)
     {
         invalid_paths = NIL;
-        max_valid_cost = path->total_cost;
+        max_valid_startup_cost = path->startup_cost;
+        max_valid_total_cost   = path->total_cost;
     }
     else
     {
         invalid_paths = list_make1(path);
-        max_valid_cost = 0;
+        max_valid_startup_cost = 0;
+        max_valid_total_cost   = 0;
     }
 
     foreach (lc, parent_rel->partial_pathlist)
@@ -2344,9 +2391,14 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
         Assert(candidate_info != NULL);
 
         if (candidate_info->valid)
-            max_valid_cost = Max(candidate->total_cost, max_valid_cost);
+        {
+            max_valid_startup_cost = Max(candidate->startup_cost, max_valid_startup_cost);
+            max_valid_total_cost   = Max(candidate->total_cost, max_valid_total_cost);
+        }
         else
+        {
             invalid_paths = lappend(invalid_paths, candidate);
+        }
     }
 
     foreach (lc, invalid_paths)
@@ -2356,7 +2408,8 @@ hint_aware_add_partial_path(RelOptInfo *parent_rel, Path *path)
 
         invalid = (Path *) lfirst(lc);
         invalid_info = (PGLabPathInfo *) invalid->pglab_private;
-        invalid->total_cost = invalid_info->original_cost + 1.01 * max_valid_cost;
+        invalid->startup_cost = invalid_info->original_startup_cost + 1.01 * max_valid_startup_cost;
+        invalid->total_cost   = invalid_info->original_total_cost + 1.01 * max_valid_total_cost;
     }
 
     PG_ADD_PARTIAL_PATH(parent_rel, path);
@@ -2366,6 +2419,8 @@ int
 hint_aware_compute_parallel_workers(RelOptInfo *rel, double heap_pages,
                                     double index_pages, int max_workers)
 {
+    ListCell *lc;
+
     if (!current_hints || !current_hints->contains_hint)
     {
         if (prev_compute_parallel_workers_hook)
@@ -2376,8 +2431,15 @@ hint_aware_compute_parallel_workers(RelOptInfo *rel, double heap_pages,
 
     if (current_hints->parallelize_entire_plan)
         return current_hints->parallel_workers;
-    else if (current_hints->parallel_rels && bms_overlap(current_hints->parallel_rels, rel->relids))
-        return current_hints->parallel_workers;
+
+    foreach(lc, current_hints->parallel_hints)
+    {
+        ParallelizationHint *par_hint;
+        par_hint = (ParallelizationHint *) lfirst(lc);
+
+        if (bms_is_subset(rel->relids, par_hint->relids))
+            return par_hint->n_workers;
+    }
 
     if (prev_compute_parallel_workers_hook)
         return (*prev_compute_parallel_workers_hook)(rel, heap_pages, index_pages, max_workers);
@@ -2437,66 +2499,17 @@ hint_aware_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel, RelOptInfo
     return hint_entry->card;
 }
 
-static Index
-locate_reloptinfo(List *candidate_rels, Relids target)
-{
-    RelOptInfo *current_relopt;
-    ListCell *lc;
-    foreach(lc, candidate_rels)
-    {
-        current_relopt = (RelOptInfo*) lfirst(lc);
-        if (bms_equal(current_relopt->relids, target))
-            return foreach_current_index(lc) + 1;
-    }
-
-    Assert(false);
-    return 0;
-}
-
-static RelOptInfo *
-forced_geqo(PlannerInfo *root, int levels_needed, List *initial_rels)
-{
-    int nrels;
-    RelOptInfo *result;
-    JoinOrder *current_node;
-    JoinOrderIterator *join_order_it;
-    int gene_idx;
-    Gene *forced_tour;
-    GeqoPrivateData priv;
-
-    root->join_search_private = (void*) &priv;
-    priv.initial_rels = initial_rels;
-
-    nrels = list_length(initial_rels);
-    forced_tour = (Gene*) palloc0(sizeof(Gene) * nrels);
-    join_order_it = (JoinOrderIterator*) palloc0(sizeof(JoinOrderIterator));
-
-    Assert(current_hints->join_order_hint);
-    joinorder_it_init(join_order_it, current_hints->join_order_hint);
-
-    gene_idx = 0;
-    for (int lc_idx = nrels - 1; lc_idx >= 0; --lc_idx)
-    {
-        current_node = (JoinOrder*) list_nth(join_order_it->current_nodes, lc_idx);
-        Assert(current_node->node_type == BASE_REL);
-        forced_tour[gene_idx++] = locate_reloptinfo(initial_rels, current_node->relids);
-    }
-
-    result = gimme_tree(root, forced_tour, nrels);
-
-    pfree(forced_tour);
-    joinorder_it_free(join_order_it);
-    root->join_search_private = NULL;
-
-    return result;
-}
-
-static RelOptInfo *
-join_search_fallback(PlannerInfo *root, int levels_needed, List *initial_rels)
+RelOptInfo *
+hint_aware_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 {
     RelOptInfo *result;
 
-    if (prev_join_search_hook)
+    if (current_hints && current_hints->join_order_hint)
+    {
+        current_join_ordering_type = &JOIN_ORDER_TYPE_FORCED;
+        result = standard_join_search(root, levels_needed, initial_rels);
+    }
+    else if (prev_join_search_hook)
     {
         current_join_ordering_type = &JOIN_ORDER_TYPE_CUSTOM;
         result = prev_join_search_hook(root, levels_needed, initial_rels);
@@ -2511,33 +2524,6 @@ join_search_fallback(PlannerInfo *root, int levels_needed, List *initial_rels)
         current_join_ordering_type = &JOIN_ORDER_TYPE_STANDARD;
         result = standard_join_search(root, levels_needed, initial_rels);
     }
-
-    return result;
-}
-
-/*
- * While we normally enforce the join order in the hint_aware_add_path function, there is one corner-case that is handled here:
- * If the user only supplied a join order and no operator hints, and if additionally the query would be optimized using GEQO,
- * we still want the operator selection to be handled by GEQO. Therefore, we use a special GEQO-style join "search" to generate
- * the final RelOptInfo. In all other cases, we simply fall back to the standard policies.
- */
-RelOptInfo *
-hint_aware_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
-{
-    RelOptInfo *result;
-    bool can_geqo;
-
-    if (current_hints && current_hints->join_order_hint)
-    {
-        current_join_ordering_type = &JOIN_ORDER_TYPE_FORCED;
-        can_geqo = enable_geqo && levels_needed >= geqo_threshold && is_linear_join_order(current_hints->join_order_hint);
-        if (can_geqo)
-            result = forced_geqo(root, levels_needed, initial_rels);
-        else
-            result = standard_join_search(root, levels_needed, initial_rels);
-    }
-    else
-        result = join_search_fallback(root, levels_needed, initial_rels);
 
     return result;
 }

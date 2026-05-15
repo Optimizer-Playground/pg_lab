@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 from typing import Optional, Self
 
-
 import psycopg
 
 
@@ -16,8 +15,10 @@ def relname(plan: dict) -> Optional[str]:
 
 def explain_plan(query: str, cur: psycopg.Cursor) -> dict:
     explain_query = f"EXPLAIN (FORMAT JSON) {query}"
-    cur.execute(explain_query)
-    plan_json = cur.fetchone()[0][0]
+    cur.execute(explain_query)  # type: ignore
+    result_set = cur.fetchone()
+    assert result_set is not None
+    plan_json = result_set[0][0]
     return plan_json["Plan"]
 
 

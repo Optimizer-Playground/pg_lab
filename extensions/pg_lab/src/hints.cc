@@ -418,8 +418,8 @@ init_hints(const char *raw_query)
     hints->cardinality_hints = NULL;
     hints->cost_hints = NULL;
 
-    hints->parallel_rels = EMPTY_BITMAP;
     hints->parallel_workers = 0;
+    hints->parallel_hints = NIL;
     hints->parallelize_entire_plan = false;
 
     hints->temp_gucs = NIL;
@@ -443,6 +443,8 @@ free_hints(PlannerHints *hints)
     hash_destroy(hints->operator_hints);
     hash_destroy(hints->cardinality_hints);
     hash_destroy(hints->cost_hints);
+
+    list_free_deep(hints->parallel_hints);
 
     foreach (lc, hints->temp_gucs)
     {
@@ -543,9 +545,12 @@ MakeOperatorHint(PlannerInfo *root, PlannerHints *hints, List *rels,
 
     if (!isnan(par_workers))
     {
+        ParallelizationHint *par_hint;
         hints->parallel_mode = PARMODE_PARALLEL;
-        hints->parallel_rels = relids;
-        hints->parallel_workers = par_workers;
+        par_hint =  (ParallelizationHint *) palloc(sizeof(ParallelizationHint));
+        par_hint->relids = relids;
+        par_hint->n_workers = par_workers;
+        hints->parallel_hints = lappend(hints->parallel_hints, par_hint);
     }
 }
 
@@ -597,9 +602,12 @@ MakeIntermediateOpHint(PlannerInfo *root, PlannerHints *hints, List *rels,
 
     if (!isnan(par_workers))
     {
+        ParallelizationHint *par_hint;
         hints->parallel_mode = PARMODE_PARALLEL;
-        hints->parallel_rels = relids;
-        hints->parallel_workers = par_workers;
+        par_hint =  (ParallelizationHint *) palloc(sizeof(ParallelizationHint));
+        par_hint->relids = relids;
+        par_hint->n_workers = par_workers;
+        hints->parallel_hints = lappend(hints->parallel_hints, par_hint);
     }
 }
 

@@ -40,7 +40,7 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
 
         void enterParallelization_setting(pg_lab::HintBlockParser::Parallelization_settingContext *ctx) override
         {
-            if (hints_->parallel_rels || hints_->parallelize_entire_plan)
+            if (hints_->parallel_hints || hints_->parallelize_entire_plan)
             {
                 ereport(WARNING,
                     errmsg("[pg_lab] Ignoring global parallelization setting"),
@@ -208,28 +208,17 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
         PlannerHints *hints_;
         std::vector<TempGUC *> temp_gucs_;
 
-        float ParseParallelWorkers(pg_lab::HintBlockParser::Parallel_hintContext *ctx)
-        {
-            if (!ctx->INT())
-            {
-                ereport(ERROR, errmsg("[pg_lab] Invalid parallel hint format: '%s'", ctx->getText().c_str()));
-                return NAN;
-            }
-
-            return std::atof(ctx->INT()->getText().c_str());
-        }
-
         void ParseOperatorHint(List *relnames, PhysicalOperator op, pg_lab::HintBlockParser::Param_listContext *ctx)
         {
             float par_workers = NAN;
             if (ctx && ctx->parallel_hint().size() > 0)
             {
-                if (hints_->parallel_rels || hints_->parallelize_entire_plan)
+                if (hints_->parallelize_entire_plan)
                 {
                     ereport(ERROR, (
                             errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-                            errmsg("[pg_lab] Found multiple parallel hints"),
-                            errdetail("Postgres only supports one parallel subplan.")));
+                            errmsg("[pg_lab] Can only parallelize independent subplans."),
+                            errdetail("Found both a Result() hint and a per-operator parallel hint.")));
                 }
 
                 par_workers = ParseParallelWorkers(ctx->parallel_hint().back());
@@ -256,6 +245,17 @@ class HintBlockListener : public pg_lab::HintBlockBaseListener
                 MakeIntermediateOpHint(root_, hints_, relnames, true, false, par_workers);
             else
                 MakeOperatorHint(root_, hints_, relnames, op, par_workers);
+        }
+
+        float ParseParallelWorkers(pg_lab::HintBlockParser::Parallel_hintContext *ctx)
+        {
+            if (!ctx->INT())
+            {
+                ereport(ERROR, errmsg("[pg_lab] Invalid parallel hint format: '%s'", ctx->getText().c_str()));
+                return NAN;
+            }
+
+            return std::atof(ctx->INT()->getText().c_str());
         }
 
         Cost ParseCost(pg_lab::HintBlockParser::CostContext *ctx)
@@ -307,6 +307,7 @@ parse_hint_block(PlannerInfo *root, PlannerHints *hints)
     if (hb_start == std::string::npos || hb_end == std::string::npos)
     {
         hints->contains_hint = false;
+        n_cleanup_actions = 0;
         return;
     }
 

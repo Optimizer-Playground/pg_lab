@@ -29,7 +29,7 @@ debug_intermediate_rels(RelOptInfo *rel)
     return rels;
 }
 
-static char *
+static const char *
 debug_print_rel(RelOptInfo *rel)
 {
     StringInfo buf;
@@ -221,6 +221,54 @@ debug_inner_op(Path *path, NodeTag type)
 
     return inner->pathtype == type;
 }
+
+static const char *
+debug_print_outer(Path *path)
+{
+    Path *outer;
+
+    outer = debug_fetch_outer(path);
+    if (!outer)
+        return "<No Outer>";
+
+    return path_to_string(outer);
+}
+
+static const char *
+debug_print_inner(Path *path)
+{
+    Path *inner;
+
+    inner = debug_fetch_inner(path);
+    if (!inner)
+        return "<No Inner>";
+
+    return path_to_string(inner);
+}
+
+static const char *
+debug_print_baserels(PlannerInfo *root)
+{
+    StringInfo buf;
+    buf = makeStringInfo();
+
+    /* simple_rel_array is 1-indexed, entry 0 is wasted */
+    for (int i = 1; i <= root->simple_rel_array_size; i++)
+    {
+        RelOptInfo *rel;
+        rel = root->simple_rel_array[i];
+        if (!rel)
+            continue;
+
+        if (rel->cheapest_total_path)
+            appendStringInfo(buf, "%s: %s\n", debug_print_rel(rel), path_to_string(rel->cheapest_total_path));
+        else
+            appendStringInfo(buf, "%s: <no path yet>\n", debug_print_rel(rel));
+    }
+
+    return buf->data;
+}
+
 
 #ifdef __cplusplus
 } // extern "C"
