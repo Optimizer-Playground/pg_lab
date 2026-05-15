@@ -1529,6 +1529,20 @@ path_satisfies_parallelization(PlannerHints *hints, Path *path)
      * one of the parallel hints.
      */
 
+    if (hints->parallelize_entire_plan)
+    {
+        ListCell *lc;
+        foreach(lc, par_subpaths)
+        {
+            Path *par_subpath;
+            par_subpath = (Path *) lfirst(lc);
+            if (IS_UPPER_REL(par_subpath->parent))
+                return true;
+        }
+
+        return false;
+    }
+
     n_expected_par = hints->parallelize_entire_plan ? 1 : list_length(hints->parallel_hints);
     if (hints->mode == HINTMODE_FULL && list_length(par_subpaths) > n_expected_par)
     {
