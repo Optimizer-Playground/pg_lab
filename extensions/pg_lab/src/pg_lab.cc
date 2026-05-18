@@ -1568,8 +1568,15 @@ path_satisfies_parallelization(PlannerHints *hints, Path *path)
         bool hint_satisfied;
 
         par_hint = (ParallelizationHint *) lfirst(lc_hints);
-        hint_satisfied = false;
+        if (!bms_is_subset(par_hint->relids, path->parent->relids))
+        {
+            /*
+             * The hint concerns a different portion of the query plan.
+             */
+            continue;
+        }
 
+        hint_satisfied = false;
         foreach (lc_subpaths, par_subpaths)
         {
             Path *par_subpath;
@@ -2598,6 +2605,35 @@ hint_aware_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel, RelOptInfo
         return outer_card;
     }
 
+}
+
+static RelOptInfo *
+walk_join_order(PlannerInfo *root, JoinOrder *current_node)
+{
+    RelOptInfo *result;
+
+    if (current_node->node_type == JOIN_REL)
+    {
+        RelOptInfo *outer_rel, *inner_rel;
+        outer_rel = walk_join_order(root, current_node->outer_child);
+        inner_rel = walk_join_order(root, current_node->inner_child);
+        result = make_join_rel(root, outer_rel, inner_rel);
+    }
+    else
+    {
+        Assert(current_node->node_type == BASE_REL);
+    }
+
+    return result;
+}
+
+static RelOptInfo *
+force_join_order(PlannerInfo *root)
+{
+    JoinOrder *join_order;
+    join_order = current_hints->join_order_hint;
+    Assert(join_order != NULL);
+    return walk_join_order(root, join_order);
 }
 
 RelOptInfo *
