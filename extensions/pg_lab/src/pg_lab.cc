@@ -178,13 +178,13 @@ PlannerHints *current_hints = NULL;
     }
 
 static const char *
-relopt_to_string(RelOptInfo *rel)
+relids_to_string(Relids relids)
 {
     int i = -1;
     StringInfo buf = makeStringInfo();
     bool first = true;
 
-    while ((i = bms_next_member(rel->relids, i)) >= 0)
+    while ((i = bms_next_member(relids, i)) >= 0)
     {
         RangeTblEntry *rte = rt_fetch(i, current_planner_root->parse->rtable);
         if (first)
@@ -195,6 +195,12 @@ relopt_to_string(RelOptInfo *rel)
     }
 
     return buf->data;
+}
+
+static const char *
+relopt_to_string(RelOptInfo *rel)
+{
+    return relids_to_string(rel->relids);
 }
 
 static const char *
@@ -2500,17 +2506,98 @@ double
 hint_aware_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *outer_rel,
                                  RelOptInfo *inner_rel, SpecialJoinInfo *sjinfo, List *restrictlist)
 {
-    bool hint_found = false;
-    CardinalityHint *hint_entry;
-
-    if (!current_hints || !current_hints->cardinality_hints)
+    if (!current_hints)
         return set_joinrel_size_fallback(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
 
-    hint_entry = (CardinalityHint*) hash_search(current_hints->cardinality_hints, &(rel->relids), HASH_FIND, &hint_found);
-    if (!hint_found)
-        return set_joinrel_size_fallback(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
+    if (current_hints->cardinality_hints)
+    {
+        CardinalityHint *hint_entry;
+        bool hint_found;
 
-    return hint_entry->card;
+        hint_entry = (CardinalityHint*) hash_search(current_hints->cardinality_hints, &(rel->relids),
+                                                    HASH_FIND, &hint_found);
+
+        if (hint_found)
+            return hint_entry->card;
+        else
+            return set_joinrel_size_fallback(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
+    }
+    else
+    {
+        /*
+         * Even if we do not have any explicit cardinality hints, we need to be a bit careful.
+         * The reason is that Postgres' path generation partially depends on the cardinality estimates.
+         * Since large portions of our hint enforcement logic is based on accepting and rejecting paths,
+         * we need to make sure that Postgres generates the paths that we are interested in in the first place.
+         *
+         * Specifically, Postgres only creates Memoize paths if the estimated number of rows of the outer relation
+         * is above a certain threshold (2). If we have a Memoize hint, we need to make sure that we exceed this
+         * threshold in order to have any chance of enforcing this hint.
+         */
+
+        JoinOrder    *jo_outer, *jo_inner;
+        OperatorHint *inner_hint;
+        double        outer_card;
+
+        outer_card = set_joinrel_size_fallback(root, rel, outer_rel, inner_rel, sjinfo, restrictlist);
+        if (outer_card > 1)
+        {
+            /*
+             * All cardinality adjustment shenanigans are only required if the outer relation of our (potential) memoized
+             * join has a cardinality estimate below the memoization threshold. If we are above the threshold, we can
+             * leave the estimate as-is.
+             */
+            return outer_card;
+        }
+
+        if (!current_hints->join_order_hint)
+        {
+            /*
+            * No join order means we do not know what the outer relation of our (potential) Memoize join is.
+            * We would need to adjust the cardinality estimates of all relations that could act as an outer relation.
+            * This is a very invasive change and we refrain from doing it for now.
+            */
+            return outer_card;
+        }
+
+        jo_outer = traverse_join_order(current_hints->join_order_hint, rel->relids);
+        if (!jo_outer || !jo_outer->parent_node)
+        {
+            /*
+             * Our current intermediate is not part of the join order or it does not have a parent node.
+             * In the second case, it must be the top-level join. This implies that there is nothing to join our intermediate
+             * with and hence, that there cannot be a Memoize node on top of it.
+             *
+             * In either case, we are done here.
+             */
+            return outer_card;
+        }
+
+        jo_inner = jo_outer->parent_node->inner_child;
+        inner_hint = jo_inner->physical_op;
+        if (!inner_hint)
+        {
+            /*
+             * No hint on the inner child means that we do not need to enforce memoization.
+             *
+             * We are done here.
+             */
+            return outer_card;
+        }
+
+        if (inner_hint->memoize_output)
+        {
+            ereport(INFO,
+                    errmsg("Adjusting cardinality estimate for join rel {%s}: 1 -> 2",
+                           relopt_to_string(rel)),
+                    errdetail("This allows pg_lab to enforce the Memoize hint on {%s}.",
+                              relids_to_string(inner_hint->relids)));
+            return 2.0;
+        }
+
+        return outer_card;
+    }
+
 }
 
 RelOptInfo *
