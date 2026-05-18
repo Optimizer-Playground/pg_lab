@@ -2608,32 +2608,30 @@ hint_aware_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel, RelOptInfo
 }
 
 static RelOptInfo *
-walk_join_order(PlannerInfo *root, JoinOrder *current_node)
+force_join_order(PlannerInfo *root, JoinOrder *current_node)
 {
     RelOptInfo *result;
 
     if (current_node->node_type == JOIN_REL)
     {
         RelOptInfo *outer_rel, *inner_rel;
-        outer_rel = walk_join_order(root, current_node->outer_child);
-        inner_rel = walk_join_order(root, current_node->inner_child);
+        outer_rel = force_join_order(root, current_node->outer_child);
+        inner_rel = force_join_order(root, current_node->inner_child);
         result = make_join_rel(root, outer_rel, inner_rel);
+
+        generate_partitionwise_join_paths(root, result);
+        if (!bms_equal(result->relids, root->all_query_rels))
+				generate_useful_gather_paths(root, result, false);
+
+        set_cheapest(result);
     }
     else
     {
         Assert(current_node->node_type == BASE_REL);
+        return root->simple_rel_array[current_node->rt_index];
     }
 
     return result;
-}
-
-static RelOptInfo *
-force_join_order(PlannerInfo *root)
-{
-    JoinOrder *join_order;
-    join_order = current_hints->join_order_hint;
-    Assert(join_order != NULL);
-    return walk_join_order(root, join_order);
 }
 
 RelOptInfo *
@@ -2644,7 +2642,7 @@ hint_aware_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
     if (current_hints && current_hints->join_order_hint)
     {
         current_join_ordering_type = &JOIN_ORDER_TYPE_FORCED;
-        result = standard_join_search(root, levels_needed, initial_rels);
+        result = force_join_order(root, current_hints->join_order_hint);
     }
     else if (prev_join_search_hook)
     {
