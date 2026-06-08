@@ -463,7 +463,7 @@ To mitigate this situation (at least to some extend), the pseudo-operator `Resul
 It applies to all nodes that consume the final join result (such as aggregations).
 By setting the parallel workers on `Result`, Postgres is forced to execute those nodes in parallel.
 Notice however, that it is currently not possible, to indicate which part of the post-processing is parallelized.
-For example, Postgres could parallelize the final aggregation as well as the final sorting, if both are requested.
+For example, Postgres could parallelize the final aggregation or the final sorting, if both are requested.
 
 ## Limitations
 
