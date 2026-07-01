@@ -3,7 +3,6 @@
 Currently, we provide two ways to setup a new pg_lab instance: as a local Postgres server, or within a Docker container.
 Both are described below.
 
-
 ## Local installation
 
 pg_lab can be installed as a local Postgres system, without interfering with global paths.
@@ -14,6 +13,7 @@ Generally speaking, this is the preferred installation method.
 > Therefore, a number of dependencies and libraries need to be available on your system.
 >
 > On Ubuntu, the following apt command should cover it all:
+>
 > ```sh
 > sudo apt install -y \
 >    build-essential meson ninja-build \
@@ -24,6 +24,7 @@ Generally speaking, this is the preferred installation method.
 > ```
 >
 > On Fedora-like systems, the following should do the trick:
+>
 > ```sh
 > sudo dnf install -y \
 >     make meson ninja cmake \
@@ -31,6 +32,7 @@ Generally speaking, this is the preferred installation method.
 >     libicu-devel readline-devel openssl-devel libzstd-devel lz4-devel \
 >     zstd java-latest-openjd
 > ```
+>
 > On other distributions (including MacOS), install the appropriate counterparts and make sure that they are available on
 > the PATH and/or the C_INCLUDE_PATH and LD_LIBRARY_PATH.
 > For example, clang and LLVM (used for the Postgres JIT compiler) might not be found by the Postgres `configure` script.
@@ -48,9 +50,9 @@ We test the latter as part of the aformentioned sporadic MacOS testing.
 The installation itself controlled by the **postgres-setup.sh** script.
 It works by loading a specific Postgres major version at `pg-source` and installing the compiled binaries at `pg-build`.
 You can install multiple different versions in different directories.
-By default, each installation receives a different subdirectory under *pg-build*, depending on the PG major release, such
+By default, each installation receives a different subdirectory under _pg-build_, depending on the PG major release, such
 as `pg-build/pg-17`.
-The *data* directory will also be located there.
+The _data_ directory will also be located there.
 Use `--help` to view all supported installation options.
 
 To start a Postgres instance, simply use **postgres-start.sh** script.
@@ -60,16 +62,15 @@ Therefore, this script should be sourced (i.e. as `. ./postgres-start.sh`), rath
 Use `--help` to view all supported options.
 
 To shut down a running pg_lab server, use **postgres-stop.sh**.
-In many ways, this script acts as the counterpart to *postgres-start.sh*.
+In many ways, this script acts as the counterpart to _postgres-start.sh_.
 When called, it also takes care of undoing all changes to your PATH that are performed by the start script.
 Therefore, this script also has to be sourced.
 Use `--help` to view all supported options.
 
-If you want to interact with your pg_lab installation from a different terminal than the one you called *postgres-start.sh*
+If you want to interact with your pg_lab installation from a different terminal than the one you called _postgres-start.sh_
 in, **postgres-load-env.sh** takes care of all necessary modifications of your PATH, etc.
 Therefore, this script also has to be sourced.
 Use `--help` to view all supported options.
-
 
 ## Docker
 
@@ -97,18 +98,22 @@ If you don't want to install pg_lab locally, we also supply a Dockerfile for a c
 >
 > ```
 
-When creating the pg_lab container, you can pass most of the settings that the *postgres-setup.sh* script would expect as
+Please note that the initial container startup will take some time. As part of this setup, a fresh Postgres
+source tree is fetched and compiled and (optionally) the databases are initialized. You can use `docker logs -f pg_lab`
+to monitor the current setup process.
+
+When creating the pg_lab container, you can pass most of the settings that the _postgres-setup.sh_ script would expect as
 `--env options`:
 
-| Argument | Description | Default |
-|----------|-------------|---------|
-| `USERNAME` | The username in the container. This is also used as the Postgres user. The server password is the same as the username. | *lab* |
-| `TIMEZONE` | The timezone of the server. Defaults to *UTC*. | *UTC* |
-| `PGVER` | The Postgres server version to use. Currently, pg_lab supports PG 16, 17, and 18. | 18 |
-| `DEBUG` | Whether a debug build should be used. Allowed values are *true* and *false*. | *false* |
-| `SETUP_JOB` | Whether the JOB/IMDB dataset should be setup during installation. Allowed values are *true* and *false*. | *false* |
-| `SETUP_STATS` | Whether the Stats dataset should be setup during installation. Allowed values are *true* and *false*. | *false* |
-| `SETUP_STACK` | Whether the Stack dataset should be setup during installation. Allowed values are *true* and *false*. | *false* |
+|  Argument     |  Description                                                                                                            | Default |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------- | ------- |
+|  `USERNAME`   | The username in the container. This is also used as the Postgres user. The server password is the same as the username. | _lab_   |
+| `TIMEZONE`    |  The timezone of the server. Defaults to _UTC_.                                                                         | _UTC_   |
+|  `PGVER`      |  The Postgres server version to use. Currently, pg_lab supports PG 16, 17, and 18.                                      | 18      |
+|  `DEBUG`      |  Whether a debug build should be used. Allowed values are _true_ and _false_.                                           | _false_ |
+| `SETUP_JOB`   | Whether the JOB/IMDB dataset should be setup during installation. Allowed values are _true_ and _false_.                | _false_ |
+| `SETUP_STATS` | Whether the Stats dataset should be setup during installation. Allowed values are _true_ and _false_.                   | _false_ |
+| `SETUP_STACK` | Whether the Stack dataset should be setup during installation. Allowed values are _true_ and _false_.                   | _false_ |
 
 The image exposes the default Postgres port `5432`.
 Don't forget to bind to it when creating the container if you want to directly connect to the server.
@@ -120,11 +125,10 @@ for the page cache. It is generally recommended to set it so 1/4 of your system'
 
 Once you have your container up and running, the shell will have all paths already set up properly.
 
-
 ## Enabling Remote Access
 
 To allow external connections to your pg_lab instance, you need to set a remote password via the `--remote-password` option of
-the *postgres-setup.sh* script. The script uses the presence of this parameter as an indicator to modify all necessary
+the _postgres-setup.sh_ script. The script uses the presence of this parameter as an indicator to modify all necessary
 configuration files (like `pg_hba.conf` and `postgresql.conf`) to allow remote access. Access will be granted to the current
 user from any host.
 

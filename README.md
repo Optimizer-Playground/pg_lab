@@ -7,7 +7,7 @@
   <img src="assets/pg_lab_logo.png" width="256" alt="The Logo of pg_lab: a blue elephant wearing a lab coat is surrounded by various reagents." />
 </p>
 
-_pg\_lab_ is a research-focused fork of PostgreSQL.
+_pg_lab_ is a research-focused fork of PostgreSQL.
 It has two main goals:
 
 1. allow Postgres extensions to modify details of the query planner, such as the cardinality estimator or cost model
@@ -50,7 +50,7 @@ docker exec -it pg_lab /bin/bash
 ```
 
 You can also setup commonly-used databases such as IMDB/JOB, Stats or Stack by passing another `--env` variable to the
-`docker run` command, e.g. `--env SETUP_JOB=true`.
+`docker run` command, e.g. `--env SETUP_JOB=true`. Use `docker logs -f pg_lab` to monitor the setup progress.
 See the [Installation](docs/installation.md) documentation for more details on installation (including on other systems)
 and usage of pg_lab.
 
@@ -69,20 +69,20 @@ The fundamental control-flow of the optimizer is thereby left intact.
 The downside of this approach is that we essentially require a fork of the upstream Postgres source code to implement
 pg_lab.
 
-| Feature | pg_hint_plan | pg_lab |
-| ------- | ------------ | ------ |
-| Forcing the join order | ✅ `Leading` hint | ✅ `JoinOrder` hint |
-| Forcing initial joins | ❔ `Leading` hint (only linear join orders) | ✅ `JoinPrefix` hint (including bushy joins) |
-| Forcing physical operators | ✅ Specific hints, e.g. `NestLoop(a b)` | ✅ Specific hints, e.g. `NestLoop(a b)` |
-| Hints for Materialize and Memoize operators | ❔ Memoize (not enforced), ❌ Materialize | ✅ `Memo` and `Material` hints |
-| Disabling specific operators | ✅ `NoNestLoop`, etc. hints | ❌ Not supported (⏳ but planned) |
-| Custom cardinality estimates for joins | ✅ `Rows` hint | ✅ `Card` hint |
-| Custom cardinality estimates for base tables | ❌ Not supported | ✅ `Card` hint |
-| Parallel workers for joins | ❔ `Parallel` hint | ✅ e.g., as `workers` hint for operators |
-| Storing and automatically re-using hint sets | ✅ Specific hint table | ❌ Not supported |
-| Custom cost estimates for joins | ❌ Not supported | ✅ Specific hints, e.g. `NestLoop(a b (COST start=4.2 total=42.42))` |
-| Custom cost estimates for base tables | ❌ Not supported | ✅ Specific hints, e.g. `SeqScan(a (COST start=4.2 total=42.42))` |
-| Temporary GUC adjustments | ✅ `Set` hint | ✅ `Set` hint |
+| Feature                                      | pg_hint_plan                                | pg_lab                                                               |
+| -------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------- |
+| Forcing the join order                       | ✅ `Leading` hint                           | ✅ `JoinOrder` hint                                                  |
+| Forcing initial joins                        | ❔ `Leading` hint (only linear join orders) | ✅ `JoinPrefix` hint (including bushy joins)                         |
+| Forcing physical operators                   | ✅ Specific hints, e.g. `NestLoop(a b)`     | ✅ Specific hints, e.g. `NestLoop(a b)`                              |
+| Hints for Materialize and Memoize operators  | ❔ Memoize (not enforced), ❌ Materialize   | ✅ `Memo` and `Material` hints                                       |
+| Disabling specific operators                 | ✅ `NoNestLoop`, etc. hints                 | ❌ Not supported (⏳ but planned)                                    |
+| Custom cardinality estimates for joins       | ✅ `Rows` hint                              | ✅ `Card` hint                                                       |
+| Custom cardinality estimates for base tables | ❌ Not supported                            | ✅ `Card` hint                                                       |
+| Parallel workers for joins                   | ❔ `Parallel` hint                          | ✅ e.g., as `workers` hint for operators                             |
+| Storing and automatically re-using hint sets | ✅ Specific hint table                      | ❌ Not supported                                                     |
+| Custom cost estimates for joins              | ❌ Not supported                            | ✅ Specific hints, e.g. `NestLoop(a b (COST start=4.2 total=42.42))` |
+| Custom cost estimates for base tables        | ❌ Not supported                            | ✅ Specific hints, e.g. `SeqScan(a (COST start=4.2 total=42.42))`    |
+| Temporary GUC adjustments                    | ✅ `Set` hint                               | ✅ `Set` hint                                                        |
 
 In the end, we took a lot of inspiration from pg_hint_plan for the design of pg_lab's hinting system:
 
