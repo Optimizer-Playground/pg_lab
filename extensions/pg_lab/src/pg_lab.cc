@@ -1135,7 +1135,7 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
      * Our control logic needs to handle both cases adequately.
      *
      * The second complicating matter is that Postgres uses two different ways to express materialization.
-     * The straightforward way is via explicit Material operators. But in additiona, materialization for merge
+     * The straightforward way is via explicit Material operators. But in addition, materialization for merge
      * joins is expressed via the special materialize_inner flag on the join itself.
      * Again, our control logic needs to handle both.
      *
@@ -1194,10 +1194,58 @@ path_satisfies_operators(PlannerHints *hints, Path *path, OperatorHint *op_hint)
     {
         return memo_allowed && !material_required;
     }
-    else if (PathIsA(inner_child, Material) || (merge_path && merge_path->materialize_inner))
+    else if (PathIsA(inner_child, Material))
     {
-        /* see longer comment above: PG uses two different representations for materialization */
         return material_allowed && !memo_required;
+    }
+    else if (merge_path)
+    {
+        /*
+         * For merge joins, we need to be really careful: Postgres does not represent materialization
+         * for merge joins via a proper Material node, but via a special flag on the merge join itself.
+         * The material node is than inserted during plan creation.
+         *
+         * What is even worse is that materialization on the inner child is not determined during
+         * enumeration (as is the case for nested loop joins). Instead, materialization is decided during
+         * _cost estimation_ of all things. The cost model evaluates whether a materialized inner child is
+         * cheaper and sets the flag accordingly. This means that we cannot reject a merge join path if it
+         * does not have a material node on the inner child, because there will never be another merge join
+         * considered by the enumerator - the enumerator already considered the merge join and the cost
+         * model later on decides whether to materialize or not.
+         *
+         * As a consequence, we need to deviate from our "just let valid paths pass through" approach and
+         * instead modify the merge join path to adhere to our hints.
+         *
+         * At the same time, this decision may have unintended side-effects. The cost model does not just
+         * compare the costs of a materialized/non-materialized merge join. Instead, it also forces a
+         * materialized/non-materialized join if this is required due to other constraints of the executor.
+         * We cannot replicate this logic 1:1 and ensure that it always stays consistent with the control
+         * flow in the cost model. Therefore, we just set the materialize_inner flag in accordance with
+         * our hints and ignore everything else.
+         *
+         * This decision might break the final plan, but if it does, the hints could not be satisfied anyway
+         * and the optimizer would also error. So we trade one error for another and hope that the first
+         * class is not hit too often.
+         *
+         * Related procedures:
+         * - match_unsorted_outer
+         * - sort_inner_outer
+         * - final_cost_mergejoin
+         */
+
+        if (material_required)
+            merge_path->materialize_inner = true;
+        else if (!material_allowed)
+            merge_path->materialize_inner = false;
+        else
+        {
+            /*
+             * We neither have to materialize nor have to not use materialize.
+             * Just use whatever setting is already there.
+             */
+        }
+
+        return true;
     }
     else
     {
