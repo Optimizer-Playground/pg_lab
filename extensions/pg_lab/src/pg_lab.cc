@@ -79,6 +79,12 @@ static set_baserel_size_estimates_hook_type prev_baserel_size_estimates_hook = N
 extern set_joinrel_size_estimates_hook_type set_joinrel_size_estimates_hook;
 static set_joinrel_size_estimates_hook_type prev_joinrel_size_estimates_hook = NULL;
 
+extern get_parameterized_baserel_size_hook_type get_parameterized_baserel_size_hook;
+static get_parameterized_baserel_size_hook_type prev_get_param_baserel_size_hook = NULL;
+
+extern get_parameterized_joinrel_size_hook_type get_parameterized_joinrel_size_hook;
+static get_parameterized_joinrel_size_hook_type prev_get_param_joinrel_size_hook = NULL;
+
 extern compute_parallel_worker_hook_type compute_parallel_worker_hook;
 static compute_parallel_worker_hook_type prev_compute_parallel_workers_hook = NULL;
 
@@ -125,6 +131,12 @@ extern PGDLLEXPORT double hint_aware_baserel_size_estimates(PlannerInfo*, RelOpt
 extern PGDLLEXPORT double hint_aware_joinrel_size_estimates(PlannerInfo*, RelOptInfo*,
                                                             RelOptInfo*, RelOptInfo*,
                                                             SpecialJoinInfo*, List*);
+
+extern PGDLLEXPORT double hint_aware_param_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel,
+                                                                  List *param_clauses);
+extern PGDLLEXPORT double hint_aware_param_joinrel_size_estimate(PlannerInfo* root, RelOptInfo *rel,
+                                                                 Path *outer_path, Path *inner_path,
+                                                                 SpecialJoinInfo *sjinfo, List *restrict_clauses);
 
 extern PGDLLEXPORT void hint_aware_initial_cost_nestloop(PlannerInfo *root,
                                                             JoinCostWorkspace *workspace,
@@ -2547,6 +2559,11 @@ hint_aware_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
     return hint_entry->card;
 }
 
+double hint_aware_param_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel, List *param_clauses)
+{
+    return hint_aware_baserel_size_estimates(root, rel);
+}
+
 
 static double
 set_joinrel_size_fallback(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *outer_rel, RelOptInfo *inner_rel, SpecialJoinInfo *sjinfo, List *restrictlist)
@@ -2653,6 +2670,13 @@ hint_aware_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel, RelOptInfo
         return outer_card;
     }
 
+}
+
+double hint_aware_param_joinrel_size_estimate(PlannerInfo* root, RelOptInfo *rel,
+                                              Path *outer_path, Path *inner_path,
+                                              SpecialJoinInfo *sjinfo, List *restrict_clauses)
+{
+    return hint_aware_joinrel_size_estimates(root, rel, outer_path->parent, inner_path->parent, sjinfo, restrict_clauses);
 }
 
 static RelOptInfo *
@@ -3075,6 +3099,13 @@ _PG_init(void)
     prev_joinrel_size_estimates_hook = set_joinrel_size_estimates_hook;
     set_joinrel_size_estimates_hook = hint_aware_joinrel_size_estimates;
 
+    prev_get_param_baserel_size_hook = get_parameterized_baserel_size_hook;
+    get_parameterized_baserel_size_hook = hint_aware_param_baserel_size_estimates;
+
+    prev_get_param_joinrel_size_hook = get_parameterized_joinrel_size_hook;
+    get_parameterized_joinrel_size_hook = hint_aware_param_joinrel_size_estimate;
+
+
     prev_compute_parallel_workers_hook = compute_parallel_worker_hook;
     compute_parallel_worker_hook = hint_aware_compute_parallel_workers;
 
@@ -3112,13 +3143,18 @@ _PG_fini(void)
     planner_hook = prev_planner_hook;
     prepare_make_one_rel_callback = prev_prepare_make_one_rel_hook;
     final_path_callback = prev_final_path_callback;
+
     join_search_hook = prev_join_search_hook;
     add_path_hook = prev_add_path_hook;
     add_partial_path_hook = prev_add_partial_path_hook;
     add_path_precheck_hook = prev_add_path_precheck_hook;
     add_partial_path_precheck_hook = prev_add_partial_path_precheck_hook;
+
     set_baserel_size_estimates_hook = prev_baserel_size_estimates_hook;
     set_joinrel_size_estimates_hook = prev_joinrel_size_estimates_hook;
+    get_parameterized_baserel_size_hook = prev_get_param_baserel_size_hook;
+    get_parameterized_joinrel_size_hook = prev_get_param_joinrel_size_hook;
+
     cost_seqscan_hook = prev_cost_seqscan_hook;
     cost_index_hook = prev_cost_index_hook;
     cost_bitmap_heap_scan_hook = prev_cost_bitmap_heap_scan_hook;
@@ -3128,6 +3164,7 @@ _PG_fini(void)
     final_cost_hashjoin_hook = prev_final_cost_hashjoin_hook;
     initial_cost_mergejoin_hook = prev_initial_cost_mergejoin_hook;
     final_cost_mergejoin_hook = prev_final_cost_mergejoin_hook;
+
     compute_parallel_worker_hook = prev_compute_parallel_workers_hook;
     ExecutorEnd_hook = prev_executor_end_hook;
 }
