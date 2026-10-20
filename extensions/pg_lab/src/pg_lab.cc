@@ -168,15 +168,27 @@ static bool trace_pruning = false;
 char *current_query_string = NULL;
 
 /*
-* We explicitly store the PlannerInfo as a static variable because some low-level routines in the planner do not
-* receive it as an argument. But, some of our hint-aware variants of these routines need it.
-*/
+ * We explicitly store the PlannerInfo as a static variable because some low-level routines in the planner do not
+ * receive it as an argument. But, some of our hint-aware variants of these routines need it.
+ */
 PlannerInfo  *current_planner_root = NULL;
 
 /* The hints that are available for the current query. */
 PlannerHints *current_hints = NULL;
 
 #define IS_HINTED() (current_hints != NULL && current_hints->contains_hint)
+
+/*
+ * Sorts in Postgres inherit the RelOptInfo of their input paths.
+ * Therefore, a sort over the final join in the query plan is still consider a RELOPT_JOINREL.
+ * Our semantics of "upper" relations (especially with regards to Result(workers=XYZ) hints)
+ * is that an upper rel is anything above the final join in the plan tree. Therefore, we need to
+ * check for sort paths in addition to standard upper rels.
+ */
+#define IS_UPPER_SORT(pathptr, all_relids) (PathIsA(pathptr, Sort) \
+                                            && (!pathptr->parent \
+                                                || IS_UPPER_REL(pathptr->parent) \
+                                                || bms_equal(pathptr->parent->relids, all_relids)))
 
 #define PathRelids(pathptr) (IS_UPPER_REL(pathptr->parent) \
                              ? current_planner_root->all_baserels \
@@ -1514,7 +1526,7 @@ path_satisfies_parallelization(PlannerHints *hints, Path *path)
          */
         ListCell *lc;
 
-        if (IS_UPPER_REL(path->parent))
+        if (IS_UPPER_REL(path->parent) || IS_UPPER_SORT(path, current_planner_root->all_baserels))
         {
             /*
              * We are already at an upper rel. We can never become part of a parallel join since these
@@ -1602,7 +1614,7 @@ path_satisfies_parallelization(PlannerHints *hints, Path *path)
         {
             Path *par_subpath;
             par_subpath = (Path *) lfirst(lc);
-            if (IS_UPPER_REL(par_subpath->parent))
+            if (IS_UPPER_REL(par_subpath->parent) || IS_UPPER_SORT(par_subpath, current_planner_root->all_baserels))
                 return true;
         }
 
@@ -1694,7 +1706,7 @@ partial_path_satisfies_parallelization(PlannerHints *hints, Path *path)
         return true;
     }
 
-    if IS_UPPER_REL(path->parent)
+    if (IS_UPPER_REL(path->parent) || IS_UPPER_SORT(path, current_planner_root->all_baserels))
     {
         /* We are already at an upper rel, but should not parallelize the entire plan. Reject. */
         return false;
