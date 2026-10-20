@@ -12,6 +12,26 @@ file.
 
 ---
 
+## Version 0.5.4
+
+This is a bugfix release that resolves a couple of issues without introducing any new features.
+
+### 🏥 Fixes
+
+- Fixed hinting of merge joins with materialized inner relations
+- Fixed `Card` hints not affecting the cardinality estimates of parameterized plans. Typically,
+  this bug affected index scans that acted as inner relations of nested loop joins. For these
+  joins, Postgres parameterized the index lookup by the outer relation's join key.
+  **Thank you @heriec for reporting this issue!**
+- Fixed a bug that caused plans with a parallel sort on top of the final join to be rejected.
+  This affected plans with a `Result` hint to force parallel execution of the full plan when
+  Postgres decide to use a sort-based aggregation.
+  **Thank you @KiraThiessat for reporting this issue!**
+
+
+---
+
+
 ## Version 0.5.3
 
 ### 🐣 New features
